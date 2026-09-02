@@ -238,7 +238,7 @@ async function run() {
 
     // Process user bookings 
     
-    app.post(["/bookings", "/my-booking"], async (req, res) => {
+    app.post(["/my-booking", "/my-booking"], async (req, res) => {
       try {
         const bookingData = req.body;
         const userEmail = bookingData.userEmail || bookingData.email;
@@ -275,7 +275,7 @@ async function run() {
     });
 
     
-    app.delete(["/bookings/:id", "/my-booking/:id"], async (req, res) => {
+    app.delete(["/my-booking/:id", "/my-booking/:id"], async (req, res) => {
       try {
         const id = req.params.id;
 
