@@ -18,7 +18,10 @@ const PORT = process.env.PORT || 5000;
 // CORS configuration to allow credential exchange (cookies) with Next.js frontend
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000",
+      "https://playplex-client.vercel.app"
+   
+    ],
     credentials: true,
   })
 );
@@ -57,17 +60,17 @@ let bookingsCollection;
 async function run() {
   try {
    
-    await client.connect();
+    //await client.connect();
 
     const db = client.db("playplex");
 
     facilitiesCollection = db.collection("facilities");
     bookingsCollection = db.collection("bookings");
 
-    await client.db("admin").command({ ping: 1 });
+    //await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
-    
+
     app.get("/", (req, res) => {
       res.send("Server is running fine!");
     });
