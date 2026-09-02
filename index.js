@@ -36,7 +36,7 @@ async function run() {
     const db = client.db("playplex");
 
     facilitiesCollection = db.collection("facilities");
-    bookingsCollection = db.collection("bookings"); // Initialize bookings collection
+    bookingsCollection = db.collection("bookings"); 
 
     await client.db("admin").command({ ping: 1 });
 
@@ -141,7 +141,10 @@ app.post("/facilities", async (req, res) => {
   }
 });
 
-
+// 4. POST route to process bookings (Required for booking form)
+app.post("/bookings", async (req, res) => {
+  try {
+    const bookingData = req.body;
 
     // Basic Validation
     if (
@@ -152,7 +155,12 @@ app.post("/facilities", async (req, res) => {
       return res.status(400).json({ message: "Missing required booking fields." });
     }
 
-   
+    // Convert facilityId string to ObjectId if present
+    const newBooking = {
+      ...bookingData,
+      facilityId: new ObjectId(bookingData.facilityId),
+      createdAt: new Date(),
+    };
 
     const result = await bookingsCollection.insertOne(newBooking);
 
@@ -161,7 +169,11 @@ app.post("/facilities", async (req, res) => {
       message: "Booking confirmed!",
       bookingId: result.insertedId,
     });
- 
+  } catch (error) {
+    console.error("Error creating booking:", error);
+    res.status(500).json({ message: "Failed to process booking." });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
