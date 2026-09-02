@@ -5,7 +5,8 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 
-const { MongoClient, ServerApiVersion } = require("mongodb");
+// 1. Imported ObjectId from mongodb
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
@@ -26,6 +27,7 @@ const client = new MongoClient(uri, {
 });
 
 let facilitiesCollection;
+let bookingsCollection; // 2. Collection variable for bookings
 
 async function run() {
   try {
@@ -34,6 +36,7 @@ async function run() {
     const db = client.db("playplex");
 
     facilitiesCollection = db.collection("facilities");
+    bookingsCollection = db.collection("bookings"); // Initialize bookings collection
 
     await client.db("admin").command({ ping: 1 });
 
@@ -46,7 +49,6 @@ async function run() {
 }
 
 run();
-
 
 // Home route
 app.get("/", (req, res) => {
@@ -68,9 +70,31 @@ app.get("/facilities", async (req, res) => {
   }
 });
 
-//post all facilities
+// 3. GET single facility by ID (Required for frontend [id] page)
+app.get("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
 
+    // Validate MongoDB ObjectId format
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
 
+    const query = { _id: new ObjectId(id) };
+    const facility = await facilitiesCollection.findOne(query);
+
+    if (!facility) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
+
+    res.json(facility);
+  } catch (error) {
+    console.error("Error fetching single facility:", error);
+    res.status(500).json({ message: "Failed to fetch facility details" });
+  }
+});
+
+// Post facility
 app.post("/facilities", async (req, res) => {
   try {
     const {
@@ -90,7 +114,6 @@ app.post("/facilities", async (req, res) => {
     const rate = pricePerHour || price;
     const slots = availableSlots || availableTimeSlots;
 
-    // Basic Validation
     if (!name || !rate || !ownerEmail) {
       return res.status(400).json({ message: "Required fields are missing." });
     }
@@ -117,6 +140,28 @@ app.post("/facilities", async (req, res) => {
     res.status(500).json({ message: "Failed to add facility." });
   }
 });
+
+
+
+    // Basic Validation
+    if (
+      !bookingData.facilityId ||
+      !bookingData.bookingDate ||
+      !bookingData.userEmail
+    ) {
+      return res.status(400).json({ message: "Missing required booking fields." });
+    }
+
+   
+
+    const result = await bookingsCollection.insertOne(newBooking);
+
+    res.status(201).json({
+      success: true,
+      message: "Booking confirmed!",
+      bookingId: result.insertedId,
+    });
+ 
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
