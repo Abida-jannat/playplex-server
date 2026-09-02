@@ -68,6 +68,55 @@ app.get("/facilities", async (req, res) => {
   }
 });
 
+//post all facilities
+
+
+app.post("/facilities", async (req, res) => {
+  try {
+    const {
+      name,
+      type,
+      image,
+      location,
+      price,
+      pricePerHour,
+      capacity,
+      availableSlots,
+      availableTimeSlots,
+      description,
+      ownerEmail,
+    } = req.body;
+
+    const rate = pricePerHour || price;
+    const slots = availableSlots || availableTimeSlots;
+
+    // Basic Validation
+    if (!name || !rate || !ownerEmail) {
+      return res.status(400).json({ message: "Required fields are missing." });
+    }
+
+    const newFacility = {
+      name,
+      type,
+      image,
+      location,
+      price: parseFloat(rate),
+      pricePerHour: parseFloat(rate),
+      capacity: parseInt(capacity, 10),
+      availableSlots: slots,
+      availableTimeSlots: slots,
+      description,
+      ownerEmail,
+      createdAt: new Date(),
+    };
+
+    const result = await facilitiesCollection.insertOne(newFacility);
+    res.status(201).json({ success: true, insertedId: result.insertedId });
+  } catch (error) {
+    console.error("Error inserting facility:", error);
+    res.status(500).json({ message: "Failed to add facility." });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
