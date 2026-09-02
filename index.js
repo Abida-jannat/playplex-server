@@ -4,8 +4,6 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
-
-// 1. Imported ObjectId from mongodb
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
@@ -27,7 +25,7 @@ const client = new MongoClient(uri, {
 });
 
 let facilitiesCollection;
-let bookingsCollection; // 2. Collection variable for bookings
+let bookingsCollection;
 
 async function run() {
   try {
@@ -36,7 +34,7 @@ async function run() {
     const db = client.db("playplex");
 
     facilitiesCollection = db.collection("facilities");
-    bookingsCollection = db.collection("bookings"); 
+    bookingsCollection = db.collection("bookings");
 
     await client.db("admin").command({ ping: 1 });
 
@@ -50,12 +48,12 @@ async function run() {
 
 run();
 
-// Home route
+
 app.get("/", (req, res) => {
   res.send("Server is running fine!");
 });
 
-// Get all facilities
+
 app.get("/facilities", async (req, res) => {
   try {
     const facilities = await facilitiesCollection.find().toArray();
@@ -70,12 +68,30 @@ app.get("/facilities", async (req, res) => {
   }
 });
 
-// 3. GET single facility by ID (Required for frontend [id] page)
+// Fetch facilities added by a specific user (Query param: ?email=...)
+app.get("/my-facilities", async (req, res) => {
+  try {
+    const email = req.query.email;
+
+    if (!email) {
+      return res.status(400).json({ message: "User email query parameter is required." });
+    }
+
+    const query = { ownerEmail: email };
+    const facilities = await facilitiesCollection.find(query).toArray();
+
+    res.json(facilities);
+  } catch (error) {
+    console.error("Error fetching user facilities:", error);
+    res.status(500).json({ message: "Failed to fetch facilities." });
+  }
+});
+
+// Fetch a single facility by ID
 app.get("/facilities/:id", async (req, res) => {
   try {
     const id = req.params.id;
 
-    // Validate MongoDB ObjectId format
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid Facility ID format" });
     }
@@ -94,7 +110,7 @@ app.get("/facilities/:id", async (req, res) => {
   }
 });
 
-// Post facility
+// Create a new facility entry
 app.post("/facilities", async (req, res) => {
   try {
     const {
@@ -141,12 +157,78 @@ app.post("/facilities", async (req, res) => {
   }
 });
 
-// 4. POST route to process bookings (Required for booking form)
+// Update an existing facility by ID
+app.put("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
+
+    const { _id, ...updatedData } = req.body;
+
+    // Convert strings to numeric types for data consistency
+    if (updatedData.pricePerHour || updatedData.price) {
+      const priceVal = parseFloat(updatedData.pricePerHour || updatedData.price);
+      updatedData.price = priceVal;
+      updatedData.pricePerHour = priceVal;
+    }
+
+    if (updatedData.capacity) {
+      updatedData.capacity = parseInt(updatedData.capacity, 10);
+    }
+
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        ...updatedData,
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await facilitiesCollection.updateOne(filter, updateDoc);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
+
+    res.json({ success: true, message: "Facility updated successfully!" });
+  } catch (error) {
+    console.error("Error updating facility:", error);
+    res.status(500).json({ message: "Failed to update facility." });
+  }
+});
+
+// Delete a facility by ID
+app.delete("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
+
+    const query = { _id: new ObjectId(id) };
+    const result = await facilitiesCollection.deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
+
+    res.json({ success: true, message: "Facility deleted successfully!" });
+  } catch (error) {
+    console.error("Error deleting facility:", error);
+    res.status(500).json({ message: "Failed to delete facility." });
+  }
+});
+
+// Process user bookings
 app.post("/bookings", async (req, res) => {
   try {
     const bookingData = req.body;
 
-    // Basic Validation
+
     if (
       !bookingData.facilityId ||
       !bookingData.bookingDate ||
@@ -155,7 +237,7 @@ app.post("/bookings", async (req, res) => {
       return res.status(400).json({ message: "Missing required booking fields." });
     }
 
-    // Convert facilityId string to ObjectId if present
+
     const newBooking = {
       ...bookingData,
       facilityId: new ObjectId(bookingData.facilityId),
