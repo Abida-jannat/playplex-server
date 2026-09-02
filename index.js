@@ -53,7 +53,6 @@ app.get("/", (req, res) => {
   res.send("Server is running fine!");
 });
 
-
 // Get all facilities
 app.get("/facilities", async (req, res) => {
   try {
