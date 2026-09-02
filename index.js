@@ -4,6 +4,8 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
@@ -13,8 +15,33 @@ const uri = process.env.MONGODB_URI;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+// CORS configuration to allow credential exchange (cookies) with Next.js frontend
+app.use(
+  cors({
+    origin: "http://localhost:3000",
+    credentials: true,
+  })
+);
+
 app.use(express.json());
+app.use(cookieParser());
+
+// Custom JWT Verification Middleware
+const verifyToken = (req, res, next) => {
+  const token = req.cookies?.token;
+
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized: No token provided" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret_key");
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(403).json({ message: "Forbidden: Invalid or expired token" });
+  }
+};
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -29,7 +56,7 @@ let bookingsCollection;
 
 async function run() {
   try {
-    // 1. Connect database client
+   
     await client.connect();
 
     const db = client.db("playplex");
@@ -40,17 +67,72 @@ async function run() {
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
-    // 2. Health Check Route
+    
     app.get("/", (req, res) => {
       res.send("Server is running fine!");
     });
 
-    // --- FACILITIES ENDPOINTS ---
+   
 
-    // Fetch all available facilities
+    // Generate Token and set HTTPOnly Cookie
+    app.post("/jwt", async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        if (!email) {
+          return res.status(400).json({ message: "Email is required for token generation." });
+        }
+
+        const token = jwt.sign(
+          { email },
+          process.env.JWT_SECRET || "secret_key",
+          { expiresIn: "7d" }
+        );
+
+        res.cookie("token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          maxAge: 7 * 24 * 60 * 60 * 1000, 
+        });
+
+        res.status(200).json({ success: true, message: "Token generated in cookie" });
+      } catch (error) {
+        console.error("Error issuing JWT:", error);
+        res.status(500).json({ message: "Failed to generate authentication token" });
+      }
+    });
+
+    // Clear Authentication Cookie (Logout)
+    app.post("/logout", (req, res) => {
+      res.clearCookie("token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      });
+      res.status(200).json({ success: true, message: "Logged out successfully" });
+    });
+
+    
+
+    // Fetch all available facilities with Search ($regex) & Filter ($in)
     app.get("/facilities", async (req, res) => {
       try {
-        const facilities = await facilitiesCollection.find().toArray();
+        const { search, type } = req.query;
+        let query = {};
+
+        // Search by facility name using $regex (case-insensitive)
+        if (search) {
+          query.name = { $regex: search, $options: "i" };
+        }
+
+       
+        if (type) {
+          const typesArray = type.split(",");
+          query.type = { $in: typesArray };
+        }
+
+        const facilities = await facilitiesCollection.find(query).toArray();
         res.json(facilities);
       } catch (error) {
         console.error("Error fetching facilities:", error);
@@ -58,14 +140,10 @@ async function run() {
       }
     });
 
-    // Fetch facilities added by a specific user
-    app.get("/my-facilities", async (req, res) => {
+    // Fetch facilities added by a specific user (Protected Route)
+    app.get("/my-facilities", verifyToken, async (req, res) => {
       try {
-        const email = req.query.email;
-
-        if (!email) {
-          return res.status(400).json({ message: "User email query parameter is required." });
-        }
+        const email = req.user.email; // Extracted from verified JWT cookie
 
         const query = { ownerEmail: email };
         const facilities = await facilitiesCollection.find(query).toArray();
@@ -100,8 +178,8 @@ async function run() {
       }
     });
 
-    // Create a new facility entry
-    app.post("/facilities", async (req, res) => {
+    // Create a new facility entry (Protected Route)
+    app.post("/facilities", verifyToken, async (req, res) => {
       try {
         const {
           name,
@@ -114,13 +192,13 @@ async function run() {
           availableSlots,
           availableTimeSlots,
           description,
-          ownerEmail,
         } = req.body;
 
+        const ownerEmail = req.user.email;
         const rate = pricePerHour || price;
         const slots = availableSlots || availableTimeSlots;
 
-        if (!name || !rate || !ownerEmail) {
+        if (!name || !rate) {
           return res.status(400).json({ message: "Required fields are missing." });
         }
 
@@ -147,8 +225,8 @@ async function run() {
       }
     });
 
-    // Update an existing facility by ID
-    app.put("/facilities/:id", async (req, res) => {
+    // Update an existing facility by ID (Protected Route)
+    app.put("/facilities/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -189,8 +267,8 @@ async function run() {
       }
     });
 
-    // Delete a facility by ID
-    app.delete("/facilities/:id", async (req, res) => {
+    // Delete a facility by ID (Protected Route)
+    app.delete("/facilities/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -212,18 +290,12 @@ async function run() {
       }
     });
 
-  
 
-    // Fetch bookings for the logged-in user 
-    app.get(["/my-booking", "/my-booking"], async (req, res) => {
+    // Fetch bookings for the logged-in user (Protected Route)
+    app.get("/my-booking", verifyToken, async (req, res) => {
       try {
-        const email = req.query.email;
+        const email = req.user.email; // Extracted from verified JWT token
 
-        if (!email) {
-          return res.status(400).json({ message: "User email query parameter is required." });
-        }
-
-       
         const query = {
           $or: [{ userEmail: email }, { email: email }],
         };
@@ -236,18 +308,13 @@ async function run() {
       }
     });
 
-    // Process user bookings 
-    
-    app.post(["/my-booking", "/my-booking"], async (req, res) => {
+    // Process user bookings (Protected Route)
+    app.post("/my-booking", verifyToken, async (req, res) => {
       try {
         const bookingData = req.body;
-        const userEmail = bookingData.userEmail || bookingData.email;
+        const userEmail = req.user.email;
 
-        if (
-          !bookingData.facilityId ||
-          !bookingData.bookingDate ||
-          !userEmail
-        ) {
+        if (!bookingData.facilityId || !bookingData.bookingDate) {
           return res.status(400).json({ message: "Missing required booking fields." });
         }
 
@@ -274,8 +341,8 @@ async function run() {
       }
     });
 
-    
-    app.delete(["/my-booking/:id", "/my-booking/:id"], async (req, res) => {
+    // Delete a booking by ID (Protected Route)
+    app.delete("/my-booking/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -296,7 +363,6 @@ async function run() {
         res.status(500).json({ message: "Failed to cancel booking." });
       }
     });
-
 
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
