@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = [
   "http://localhost:3000",
   "https://playplex-client.vercel.app",
-  process.env.CLIENT_API,
+  process.env.NEXT_PUBLIC_API_URL,
 ].filter(Boolean);
 
 app.use(
