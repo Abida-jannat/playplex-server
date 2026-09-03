@@ -15,19 +15,57 @@ const uri = process.env.MONGODB_URI;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS configuration to allow credential exchange (cookies) with Next.js frontend
+const allowedOrigins = [
+  "http://localhost:3000",
+  process.env.CLIENT_URL,
+];
+
 app.use(
   cors({
-    origin: ["http://localhost:3000",
-      "https://playplex-client.vercel.app"
-   
-    ],
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   })
 );
 
 app.use(express.json());
 app.use(cookieParser());
+
+// MongoDB Client Setup with Serverless Connection Caching
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
+
+let dbInstance = null;
+
+async function getDb() {
+  if (dbInstance) return dbInstance;
+  await client.connect();
+  dbInstance = client.db("playplex");
+  return dbInstance;
+}
+
+// Database Connection Middleware for Serverless
+app.use(async (req, res, next) => {
+  try {
+    const db = await getDb();
+    req.facilitiesCollection = db.collection("facilities");
+    req.bookingsCollection = db.collection("bookings");
+    next();
+  } catch (error) {
+    console.error("Database connection middleware error:", error);
+    res.status(500).json({ message: "Database connection failed" });
+  }
+});
 
 // Custom JWT Verification Middleware
 const verifyToken = (req, res, next) => {
@@ -46,333 +84,274 @@ const verifyToken = (req, res, next) => {
   }
 };
 
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
+// --- ROUTES (Registered Synchronously) ---
+
+app.get("/", (req, res) => {
+  res.send("Server is running fine!");
 });
 
-let facilitiesCollection;
-let bookingsCollection;
-
-async function run() {
+app.post("/jwt", async (req, res) => {
   try {
-   
-    //await client.connect();
+    const { email } = req.body;
 
-    const db = client.db("playplex");
+    if (!email) {
+      return res.status(400).json({ message: "Email is required for token generation." });
+    }
 
-    facilitiesCollection = db.collection("facilities");
-    bookingsCollection = db.collection("bookings");
+    const token = jwt.sign(
+      { email },
+      process.env.JWT_SECRET || "secret_key",
+      { expiresIn: "7d" }
+    );
 
-    //await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-
-
-    app.get("/", (req, res) => {
-      res.send("Server is running fine!");
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: true, 
+      sameSite: "none", 
+      maxAge: 7 * 24 * 60 * 60 * 1000, 
     });
 
-   
+    res.status(200).json({ success: true, message: "Token generated in cookie" });
+  } catch (error) {
+    console.error("Error issuing JWT:", error);
+    res.status(500).json({ message: "Failed to generate authentication token" });
+  }
+});
 
-    // Generate Token and set HTTPOnly Cookie
-    app.post("/jwt", async (req, res) => {
-      try {
-        const { email } = req.body;
+app.post("/logout", (req, res) => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+  });
+  res.status(200).json({ success: true, message: "Logged out successfully" });
+});
 
-        if (!email) {
-          return res.status(400).json({ message: "Email is required for token generation." });
-        }
+app.get("/facilities", async (req, res) => {
+  try {
+    const { search, type } = req.query;
+    let query = {};
 
-        const token = jwt.sign(
-          { email },
-          process.env.JWT_SECRET || "secret_key",
-          { expiresIn: "7d" }
-        );
+    if (search) {
+      query.name = { $regex: search, $options: "i" };
+    }
 
-        res.cookie("token", token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          maxAge: 7 * 24 * 60 * 60 * 1000, 
-        });
+    if (type) {
+      const typesArray = type.split(",");
+      query.type = { $in: typesArray };
+    }
 
-        res.status(200).json({ success: true, message: "Token generated in cookie" });
-      } catch (error) {
-        console.error("Error issuing JWT:", error);
-        res.status(500).json({ message: "Failed to generate authentication token" });
-      }
-    });
+    const facilities = await req.facilitiesCollection.find(query).toArray();
+    res.json(facilities);
+  } catch (error) {
+    console.error("Error fetching facilities:", error);
+    res.status(500).json({ message: "Failed to get facilities" });
+  }
+});
 
-    // Clear Authentication Cookie (Logout)
-    app.post("/logout", (req, res) => {
-      res.clearCookie("token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      });
-      res.status(200).json({ success: true, message: "Logged out successfully" });
-    });
+app.get("/my-facilities", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+    const query = { ownerEmail: email };
+    const facilities = await req.facilitiesCollection.find(query).toArray();
+    res.json(facilities);
+  } catch (error) {
+    console.error("Error fetching user facilities:", error);
+    res.status(500).json({ message: "Failed to fetch facilities." });
+  }
+});
 
-    
+app.get("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
 
-    // Fetch all available facilities with Search ($regex) & Filter ($in)
-    app.get("/facilities", async (req, res) => {
-      try {
-        const { search, type } = req.query;
-        let query = {};
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
 
-        // Search by facility name using $regex (case-insensitive)
-        if (search) {
-          query.name = { $regex: search, $options: "i" };
-        }
+    const query = { _id: new ObjectId(id) };
+    const facility = await req.facilitiesCollection.findOne(query);
 
-       
-        if (type) {
-          const typesArray = type.split(",");
-          query.type = { $in: typesArray };
-        }
+    if (!facility) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
 
-        const facilities = await facilitiesCollection.find(query).toArray();
-        res.json(facilities);
-      } catch (error) {
-        console.error("Error fetching facilities:", error);
-        res.status(500).json({ message: "Failed to get facilities" });
-      }
-    });
+    res.json(facility);
+  } catch (error) {
+    console.error("Error fetching single facility:", error);
+    res.status(500).json({ message: "Failed to fetch facility details" });
+  }
+});
 
-    // Fetch facilities added by a specific user (Protected Route)
-    app.get("/my-facilities", verifyToken, async (req, res) => {
-      try {
-        const email = req.user.email; // Extracted from verified JWT cookie
+app.post("/facilities", verifyToken, async (req, res) => {
+  try {
+    const {
+      name, type, image, location, price, pricePerHour, capacity, availableSlots, availableTimeSlots, description,
+    } = req.body;
 
-        const query = { ownerEmail: email };
-        const facilities = await facilitiesCollection.find(query).toArray();
+    const ownerEmail = req.user.email;
+    const rate = pricePerHour || price;
+    const slots = availableSlots || availableTimeSlots;
 
-        res.json(facilities);
-      } catch (error) {
-        console.error("Error fetching user facilities:", error);
-        res.status(500).json({ message: "Failed to fetch facilities." });
-      }
-    });
+    if (!name || !rate) {
+      return res.status(400).json({ message: "Required fields are missing." });
+    }
 
-    // Fetch a single facility by ID
-    app.get("/facilities/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
+    const newFacility = {
+      name, type, image, location,
+      price: parseFloat(rate),
+      pricePerHour: parseFloat(rate),
+      capacity: parseInt(capacity, 10),
+      availableSlots: slots,
+      availableTimeSlots: slots,
+      description,
+      ownerEmail,
+      createdAt: new Date(),
+    };
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({ message: "Invalid Facility ID format" });
-        }
+    const result = await req.facilitiesCollection.insertOne(newFacility);
+    res.status(201).json({ success: true, insertedId: result.insertedId });
+  } catch (error) {
+    console.error("Error inserting facility:", error);
+    res.status(500).json({ message: "Failed to add facility." });
+  }
+});
 
-        const query = { _id: new ObjectId(id) };
-        const facility = await facilitiesCollection.findOne(query);
+app.put("/facilities/:id", verifyToken, async (req, res) => {
+  try {
+    const id = req.params.id;
 
-        if (!facility) {
-          return res.status(404).json({ message: "Facility not found" });
-        }
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
 
-        res.json(facility);
-      } catch (error) {
-        console.error("Error fetching single facility:", error);
-        res.status(500).json({ message: "Failed to fetch facility details" });
-      }
-    });
+    const { _id, ...updatedData } = req.body;
 
-    // Create a new facility entry (Protected Route)
-    app.post("/facilities", verifyToken, async (req, res) => {
-      try {
-        const {
-          name,
-          type,
-          image,
-          location,
-          price,
-          pricePerHour,
-          capacity,
-          availableSlots,
-          availableTimeSlots,
-          description,
-        } = req.body;
+    if (updatedData.pricePerHour || updatedData.price) {
+      const priceVal = parseFloat(updatedData.pricePerHour || updatedData.price);
+      updatedData.price = priceVal;
+      updatedData.pricePerHour = priceVal;
+    }
 
-        const ownerEmail = req.user.email;
-        const rate = pricePerHour || price;
-        const slots = availableSlots || availableTimeSlots;
+    if (updatedData.capacity) {
+      updatedData.capacity = parseInt(updatedData.capacity, 10);
+    }
 
-        if (!name || !rate) {
-          return res.status(400).json({ message: "Required fields are missing." });
-        }
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: { ...updatedData, updatedAt: new Date() },
+    };
 
-        const newFacility = {
-          name,
-          type,
-          image,
-          location,
-          price: parseFloat(rate),
-          pricePerHour: parseFloat(rate),
-          capacity: parseInt(capacity, 10),
-          availableSlots: slots,
-          availableTimeSlots: slots,
-          description,
-          ownerEmail,
-          createdAt: new Date(),
-        };
+    const result = await req.facilitiesCollection.updateOne(filter, updateDoc);
 
-        const result = await facilitiesCollection.insertOne(newFacility);
-        res.status(201).json({ success: true, insertedId: result.insertedId });
-      } catch (error) {
-        console.error("Error inserting facility:", error);
-        res.status(500).json({ message: "Failed to add facility." });
-      }
-    });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
 
-    // Update an existing facility by ID (Protected Route)
-    app.put("/facilities/:id", verifyToken, async (req, res) => {
-      try {
-        const id = req.params.id;
+    res.json({ success: true, message: "Facility updated successfully!" });
+  } catch (error) {
+    console.error("Error updating facility:", error);
+    res.status(500).json({ message: "Failed to update facility." });
+  }
+});
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({ message: "Invalid Facility ID format" });
-        }
+app.delete("/facilities/:id", verifyToken, async (req, res) => {
+  try {
+    const id = req.params.id;
 
-        const { _id, ...updatedData } = req.body;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Facility ID format" });
+    }
 
-        if (updatedData.pricePerHour || updatedData.price) {
-          const priceVal = parseFloat(updatedData.pricePerHour || updatedData.price);
-          updatedData.price = priceVal;
-          updatedData.pricePerHour = priceVal;
-        }
+    const query = { _id: new ObjectId(id) };
+    const result = await req.facilitiesCollection.deleteOne(query);
 
-        if (updatedData.capacity) {
-          updatedData.capacity = parseInt(updatedData.capacity, 10);
-        }
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Facility not found" });
+    }
 
-        const filter = { _id: new ObjectId(id) };
-        const updateDoc = {
-          $set: {
-            ...updatedData,
-            updatedAt: new Date(),
-          },
-        };
+    res.json({ success: true, message: "Facility deleted successfully!" });
+  } catch (error) {
+    console.error("Error deleting facility:", error);
+    res.status(500).json({ message: "Failed to delete facility." });
+  }
+});
 
-        const result = await facilitiesCollection.updateOne(filter, updateDoc);
+app.get("/my-booking", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+    const query = {
+      $or: [{ userEmail: email }, { email: email }],
+    };
 
-        if (result.matchedCount === 0) {
-          return res.status(404).json({ message: "Facility not found" });
-        }
+    const bookings = await req.bookingsCollection.find(query).toArray();
+    res.json(bookings);
+  } catch (error) {
+    console.error("Error fetching user bookings:", error);
+    res.status(500).json({ message: "Failed to fetch bookings." });
+  }
+});
 
-        res.json({ success: true, message: "Facility updated successfully!" });
-      } catch (error) {
-        console.error("Error updating facility:", error);
-        res.status(500).json({ message: "Failed to update facility." });
-      }
-    });
+app.post("/my-booking", verifyToken, async (req, res) => {
+  try {
+    const bookingData = req.body;
+    const userEmail = req.user.email;
 
-    // Delete a facility by ID (Protected Route)
-    app.delete("/facilities/:id", verifyToken, async (req, res) => {
-      try {
-        const id = req.params.id;
+    if (!bookingData.facilityId || !bookingData.bookingDate) {
+      return res.status(400).json({ message: "Missing required booking fields." });
+    }
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({ message: "Invalid Facility ID format" });
-        }
+    const newBooking = {
+      ...bookingData,
+      userEmail: userEmail,
+      facilityId: ObjectId.isValid(bookingData.facilityId)
+        ? new ObjectId(bookingData.facilityId)
+        : bookingData.facilityId,
+      status: bookingData.status || "confirmed",
+      createdAt: new Date(),
+    };
 
-        const query = { _id: new ObjectId(id) };
-        const result = await facilitiesCollection.deleteOne(query);
+    const result = await req.bookingsCollection.insertOne(newBooking);
 
-        if (result.deletedCount === 0) {
-          return res.status(404).json({ message: "Facility not found" });
-        }
-
-        res.json({ success: true, message: "Facility deleted successfully!" });
-      } catch (error) {
-        console.error("Error deleting facility:", error);
-        res.status(500).json({ message: "Failed to delete facility." });
-      }
-    });
-
-
-    // Fetch bookings for the logged-in user (Protected Route)
-    app.get("/my-booking", verifyToken, async (req, res) => {
-      try {
-        const email = req.user.email; // Extracted from verified JWT token
-
-        const query = {
-          $or: [{ userEmail: email }, { email: email }],
-        };
-
-        const bookings = await bookingsCollection.find(query).toArray();
-        res.json(bookings);
-      } catch (error) {
-        console.error("Error fetching user bookings:", error);
-        res.status(500).json({ message: "Failed to fetch bookings." });
-      }
-    });
-
-    // Process user bookings (Protected Route)
-    app.post("/my-booking", verifyToken, async (req, res) => {
-      try {
-        const bookingData = req.body;
-        const userEmail = req.user.email;
-
-        if (!bookingData.facilityId || !bookingData.bookingDate) {
-          return res.status(400).json({ message: "Missing required booking fields." });
-        }
-
-        const newBooking = {
-          ...bookingData,
-          userEmail: userEmail,
-          facilityId: ObjectId.isValid(bookingData.facilityId)
-            ? new ObjectId(bookingData.facilityId)
-            : bookingData.facilityId,
-          status: bookingData.status || "confirmed",
-          createdAt: new Date(),
-        };
-
-        const result = await bookingsCollection.insertOne(newBooking);
-
-        res.status(201).json({
-          success: true,
-          message: "Booking confirmed!",
-          bookingId: result.insertedId,
-        });
-      } catch (error) {
-        console.error("Error creating booking:", error);
-        res.status(500).json({ message: "Failed to process booking." });
-      }
-    });
-
-    // Delete a booking by ID (Protected Route)
-    app.delete("/my-booking/:id", verifyToken, async (req, res) => {
-      try {
-        const id = req.params.id;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({ message: "Invalid Booking ID format" });
-        }
-
-        const query = { _id: new ObjectId(id) };
-        const result = await bookingsCollection.deleteOne(query);
-
-        if (result.deletedCount === 0) {
-          return res.status(404).json({ message: "Booking not found" });
-        }
-
-        res.json({ success: true, message: "Booking cancelled successfully!" });
-      } catch (error) {
-        console.error("Error cancelling booking:", error);
-        res.status(500).json({ message: "Failed to cancel booking." });
-      }
-    });
-
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+    res.status(201).json({
+      success: true,
+      message: "Booking confirmed!",
+      bookingId: result.insertedId,
     });
   } catch (error) {
-    console.error("MongoDB connection error:", error);
+    console.error("Error creating booking:", error);
+    res.status(500).json({ message: "Failed to process booking." });
   }
+});
+
+app.delete("/my-booking/:id", verifyToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid Booking ID format" });
+    }
+
+    const query = { _id: new ObjectId(id) };
+    const result = await req.bookingsCollection.deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    res.json({ success: true, message: "Booking cancelled successfully!" });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    res.status(500).json({ message: "Failed to cancel booking." });
+  }
+});
+
+// Local development listener
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
 }
 
-run();
+// Export for Vercel Serverless Deployment
+module.exports = app;
