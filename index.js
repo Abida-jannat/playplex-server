@@ -95,6 +95,7 @@ async function run() {
     const db = client.db("playplex");
     const facilitiesCollection = db.collection("facilities");
     const bookingsCollection = db.collection("bookings");
+    const usersCollection = db.collection("users");
 
     // Ping check
     await client.db("admin").command({ ping: 1 });
@@ -126,6 +127,108 @@ async function run() {
       } catch (err) {
         console.error("Error fetching featured facilities:", err);
         res.status(500).json({ error: "Failed to fetch featured facilities" });
+      }
+    });
+
+    // 1. User Registration Route
+    app.post("/api/auth/register", async (req, res) => {
+      try {
+        const { name, email, photoURL, password } = req.body;
+
+        if (!name || !email || !password) {
+          return res.status(400).json({ error: "Name, email, and password are required." });
+        }
+
+        const existingUser = await usersCollection.findOne({ email: email.toLowerCase() });
+        if (existingUser) {
+          return res.status(409).json({ error: "Email already registered. Please login." });
+        }
+
+        const newUser = {
+          name,
+          email: email.toLowerCase(),
+          photoURL: photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200",
+          password,
+          role: "user",
+          createdAt: new Date(),
+        };
+
+        await usersCollection.insertOne(newUser);
+        res.status(201).json({ message: "User registered successfully!" });
+      } catch (error) {
+        console.error("Register error:", error);
+        res.status(500).json({ error: "Internal server error during registration." });
+      }
+    });
+
+    // 2. User Login Route
+    app.post("/api/auth/login", async (req, res) => {
+      try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+          return res.status(400).json({ error: "Email and password are required." });
+        }
+
+        const user = await usersCollection.findOne({ email: email.toLowerCase() });
+
+        if (!user || user.password !== password) {
+          return res.status(401).json({ error: "Invalid email or password." });
+        }
+
+        res.status(200).json({
+          message: "Login successful!",
+          user: {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            photoURL: user.photoURL,
+            role: user.role,
+          },
+        });
+      } catch (error) {
+        console.error("Login error:", error);
+        res.status(500).json({ error: "Internal server error during login." });
+      }
+    });
+
+    // 3. Google Sign-in / Social Login Route
+    app.post("/api/auth/google", async (req, res) => {
+      try {
+        const { name, email, photoURL } = req.body;
+
+        if (!email) {
+          return res.status(400).json({ error: "Email is required for Google authentication." });
+        }
+
+        let user = await usersCollection.findOne({ email: email.toLowerCase() });
+
+        if (!user) {
+          const newUser = {
+            name: name || "PlayPlex Athlete",
+            email: email.toLowerCase(),
+            photoURL: photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200",
+            provider: "google",
+            role: "user",
+            createdAt: new Date(),
+          };
+          const result = await usersCollection.insertOne(newUser);
+          user = { ...newUser, _id: result.insertedId };
+        }
+
+        res.status(200).json({
+          message: "Google authentication successful!",
+          user: {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            photoURL: user.photoURL,
+            role: user.role,
+          },
+        });
+      } catch (error) {
+        console.error("Google auth error:", error);
+        res.status(500).json({ error: "Internal server error during Google sign-in." });
       }
     });
 
