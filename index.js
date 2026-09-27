@@ -4,7 +4,7 @@ dns.setServers(["8.8.8.8", "8.8.4.4"]);
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
@@ -231,6 +231,113 @@ async function run() {
         res.status(500).json({ error: "Internal server error during Google sign-in." });
       }
     });
+
+    app.post("/api/facilities", async (req, res) => {
+      try {
+        const facilityData = req.body;
+
+        const newFacility = {
+          name: facilityData.name,
+          category: facilityData.category,
+          image: facilityData.image,
+          location: facilityData.location,
+          pricePerHour: Number(facilityData.pricePerHour),
+          capacity: Number(facilityData.capacity),
+          availableTimeSlots: facilityData.availableTimeSlots,
+          description: facilityData.description,
+          ownerEmail: facilityData.ownerEmail,
+          rating: 5.0,
+          createdAt: new Date(),
+        };
+
+        const result = await facilitiesCollection.insertOne(newFacility);
+        res.status(201).json({ success: true, insertedId: result.insertedId });
+      } catch (error) {
+        console.error("Error creating facility:", error);
+        res.status(500).json({ error: "Failed to create facility" });
+      }
+    });
+
+    // READ: Get All Facilities (supports search & category filtering)
+    app.get("/api/facilities", async (req, res) => {
+      try {
+        const { category, search } = req.query;
+        let query = {};
+
+        if (category && category !== "All") {
+          query.category = { $regex: new RegExp(`^${category}$`, "i") };
+        }
+
+        if (search) {
+          query.$or = [
+            { name: { $regex: search,$options: "i" } },
+            { location: { $regex: search,$options: "i" } },
+          ];
+        }
+
+        const facilities = await facilitiesCollection.find(query).sort({ createdAt: -1 }).toArray();
+        res.status(200).json(facilities);
+      } catch (error) {
+        console.error("Error fetching facilities:", error);
+        res.status(500).json({ error: "Failed to fetch facilities" });
+      }
+    });
+     // GET: Single Facility by ID
+    app.get("/api/facilities/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
+        if (!facility) {
+          return res.status(404).json({ error: "Facility not found" });
+        }
+        res.status(200).json(facility);
+      } catch (error) {
+        console.error("Error fetching single facility:", error);
+        res.status(500).json({ error: "Failed to fetch facility details" });
+      }
+    });
+
+    // POST: Create New Booking
+    app.post("/api/bookings", async (req, res) => {
+      try {
+        const {
+          facilityId,
+          facilityName,
+          userEmail,
+          userName,
+          bookingDate,
+          timeSlot,
+          hours,
+          pricePerHour,
+          totalPrice,
+        } = req.body;
+
+        if (!facilityId || !bookingDate || !timeSlot || !hours) {
+          return res.status(400).json({ error: "Missing required booking details." });
+        }
+
+        const newBooking = {
+          facilityId,
+          facilityName,
+          userEmail,
+          userName,
+          bookingDate,
+          timeSlot,
+          hours: Number(hours),
+          pricePerHour: Number(pricePerHour),
+          totalPrice: Number(totalPrice),
+          status: "pending", // Default requirement
+          createdAt: new Date(),
+        };
+
+        const result = await bookingsCollection.insertOne(newBooking);
+        res.status(201).json({ success: true, bookingId: result.insertedId });
+      } catch (error) {
+        console.error("Error creating booking:", error);
+        res.status(500).json({ error: "Failed to create booking" });
+      }
+    });
+
 
   } catch (error) {
     console.error("MongoDB connection error:", error);
