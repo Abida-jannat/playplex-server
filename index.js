@@ -283,26 +283,7 @@ async function run() {
       }
     });
 
-    app.get("/api/my-facilities", async (req, res) => {
-      try {
-        const { email } = req.query;
-        if (!email) {
-          return res.status(400).json({ error: "Owner email is required" });
-
-        }
-
-        const facilities = await facilitiesCollection
-          .find({ ownerEmail: email.toLowerCase() })
-          .sort({ createAt: -1 })
-          .toArray();
-        res.status(200).json(facilities);
-      } catch (error) {
-        console.error("Error fetching my facilities:", error);
-        res.status(500).json({ error: "Failed to fetch facilities" });
-         }
-       })
-    
-     // GET: Single Facility by ID
+    // GET: Single Facility by ID
     app.get("/api/facilities/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -357,9 +338,133 @@ async function run() {
         res.status(500).json({ error: "Failed to create booking" });
       }
     });
-    
 
 
+
+    // GET: Facilities for logged-in owner
+    app.get("/api/my-facilities", async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email) {
+          return res.status(400).json({ error: "Owner email is required" });
+        }
+
+        const facilities = await facilitiesCollection
+          .find({ ownerEmail: email.toLowerCase() })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.status(200).json(facilities);
+      } catch (error) {
+        console.error("Error fetching my facilities:", error);
+        res.status(500).json({ error: "Failed to fetch facilities" });
+      }
+    });
+
+    // UPDATE: Update facility (Only owner can update)
+    app.patch("/api/facilities/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { ownerEmail, ...updateData } = req.body;
+
+        if (!ownerEmail) {
+          return res.status(401).json({ error: "Unauthorized. Owner email is required." });
+        }
+
+        const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
+        if (!facility) {
+          return res.status(404).json({ error: "Facility not found" });
+        }
+
+        if (facility.ownerEmail?.toLowerCase() !== ownerEmail.toLowerCase()) {
+          return res.status(403).json({ error: "Forbidden: You are not the owner of this facility." });
+        }
+
+        if (updateData.pricePerHour) updateData.pricePerHour = Number(updateData.pricePerHour);
+        if (updateData.capacity) updateData.capacity = Number(updateData.capacity);
+
+        const result = await facilitiesCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        res.status(200).json({ success: true, message: "Facility updated successfully", result });
+      } catch (error) {
+        console.error("Error updating facility:", error);
+        res.status(500).json({ error: "Failed to update facility" });
+      }
+    });
+
+    // DELETE: Delete facility (Only owner can delete)
+    app.delete("/api/facilities/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(401).json({ error: "Unauthorized. Owner email is required." });
+        }
+
+        const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
+        if (!facility) {
+          return res.status(404).json({ error: "Facility not found" });
+        }
+
+        if (facility.ownerEmail?.toLowerCase() !== email.toLowerCase()) {
+          return res.status(403).json({ error: "Forbidden: You cannot delete another user's facility." });
+        }
+
+        await facilitiesCollection.deleteOne({ _id: new ObjectId(id) });
+        res.status(200).json({ success: true, message: "Facility deleted successfully" });
+      } catch (error) {
+        console.error("Error deleting facility:", error);
+        res.status(500).json({ error: "Failed to delete facility" });
+      }
+    });
+
+
+
+    app.get("/api/my-bookings", async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email) {
+          return res.status(400).json({ error: "User email is required" });
+        }
+
+        const bookings = await bookingsCollection
+          .find({ userEmail: email.toLowerCase() })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.status(200).json(bookings);
+      } catch (error) {
+        console.error("Error fetching bookings:", error);
+        res.status(500).json({ error: "Failed to load bookings" });
+      }
+    });
+
+    // DELETE: Cancel Booking
+    app.delete("/api/bookings/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { email } = req.query;
+
+        const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+        if (!booking) {
+          return res.status(404).json({ error: "Booking not found" });
+        }
+
+        if (booking.userEmail?.toLowerCase() !== email?.toLowerCase()) {
+          return res.status(403).json({ error: "Unauthorized to cancel this booking." });
+        }
+
+        await bookingsCollection.deleteOne({ _id: new ObjectId(id) });
+        res.status(200).json({ success: true, message: "Booking cancelled successfully" });
+      } catch (error) {
+        console.error("Error cancelling booking:", error);
+        res.status(500).json({ error: "Failed to cancel booking" });
+      }
+    });
 
   } catch (error) {
     console.error("MongoDB connection error:", error);
