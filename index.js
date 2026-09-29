@@ -282,6 +282,26 @@ async function run() {
         res.status(500).json({ error: "Failed to fetch facilities" });
       }
     });
+
+    app.get("/api/my-facilities", async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email) {
+          return res.status(400).json({ error: "Owner email is required" });
+
+        }
+
+        const facilities = await facilitiesCollection
+          .find({ ownerEmail: email.toLowerCase() })
+          .sort({ createAt: -1 })
+          .toArray();
+        res.status(200).json(facilities);
+      } catch (error) {
+        console.error("Error fetching my facilities:", error);
+        res.status(500).json({ error: "Failed to fetch facilities" });
+         }
+       })
+    
      // GET: Single Facility by ID
     app.get("/api/facilities/:id", async (req, res) => {
       try {
@@ -337,6 +357,8 @@ async function run() {
         res.status(500).json({ error: "Failed to create booking" });
       }
     });
+    
+
 
 
   } catch (error) {
