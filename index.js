@@ -5,6 +5,8 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 
 dotenv.config();
 
@@ -13,8 +15,14 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middlewares
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:3000",
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -101,6 +109,73 @@ async function run() {
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
+    // ----------------------------------------------------
+    // JWT Verification Middleware
+    // ----------------------------------------------------
+    const verifyToken = (req, res, next) => {
+      let token = req.cookies?.playplex_token;
+
+      if (!token && req.headers.authorization) {
+        const parts = req.headers.authorization.split(" ");
+        if (parts.length === 2 && parts[0] === "Bearer") {
+          token = parts[1];
+        }
+      }
+
+      if (!token) {
+        return res.status(401).json({ error: "Access denied. No token provided." });
+      }
+
+      try {
+        const decoded = jwt.verify(
+          token,
+          process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "playplex_jwt_secret"
+        );
+        req.user = decoded;
+        next();
+      } catch (err) {
+        return res.status(403).json({ error: "Invalid or expired token." });
+      }
+    };
+
+    // Endpoint to generate & store JWT in HTTPOnly cookie (Call this after Better-Auth login)
+    app.post("/api/auth/jwt-token", async (req, res) => {
+      try {
+        const { email } = req.body;
+        if (!email) {
+          return res.status(400).json({ error: "Email is required" });
+        }
+
+        const token = jwt.sign(
+          { email: email.toLowerCase() },
+          process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "playplex_jwt_secret",
+          { expiresIn: "7d" }
+        );
+
+        res.cookie("playplex_token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
+        res.status(200).json({ success: true, message: "Token cookie set successfully" });
+      } catch (error) {
+        console.error("JWT creation error:", error);
+        res.status(500).json({ error: "Failed to generate token" });
+      }
+    });
+
+    // Endpoint to clear HTTPOnly cookie on logout
+    app.post("/api/auth/logout", (req, res) => {
+      res.clearCookie("playplex_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      });
+      res.status(200).json({ success: true, message: "Logged out successfully" });
+    });
+
     app.get("/api/seed", async (req, res) => {
       try {
         const count = await facilitiesCollection.countDocuments();
@@ -176,6 +251,20 @@ async function run() {
           return res.status(401).json({ error: "Invalid email or password." });
         }
 
+        // Generate token and set HTTPOnly cookie
+        const token = jwt.sign(
+          { id: user._id, email: user.email, role: user.role || "user" },
+          process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "playplex_jwt_secret",
+          { expiresIn: "7d" }
+        );
+
+        res.cookie("playplex_token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
         res.status(200).json({
           message: "Login successful!",
           user: {
@@ -216,6 +305,20 @@ async function run() {
           user = { ...newUser, _id: result.insertedId };
         }
 
+        // Generate token and set HTTPOnly cookie
+        const token = jwt.sign(
+          { id: user._id, email: user.email, role: user.role || "user" },
+          process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET || "playplex_jwt_secret",
+          { expiresIn: "7d" }
+        );
+
+        res.cookie("playplex_token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
         res.status(200).json({
           message: "Google authentication successful!",
           user: {
@@ -232,7 +335,8 @@ async function run() {
       }
     });
 
-    app.post("/api/facilities", async (req, res) => {
+    // POST: Create New Facility (Protected by verifyToken)
+    app.post("/api/facilities", verifyToken, async (req, res) => {
       try {
         const facilityData = req.body;
 
@@ -245,7 +349,7 @@ async function run() {
           capacity: Number(facilityData.capacity),
           availableTimeSlots: facilityData.availableTimeSlots,
           description: facilityData.description,
-          ownerEmail: facilityData.ownerEmail,
+          ownerEmail: req.user.email || facilityData.ownerEmail,
           rating: 5.0,
           createdAt: new Date(),
         };
@@ -258,31 +362,38 @@ async function run() {
       }
     });
 
-    // READ: Get All Facilities (supports search & category filtering)
+    // READ: Get All Facilities (supports search with $regex & filter with$in)
     app.get("/api/facilities", async (req, res) => {
       try {
         const { category, search } = req.query;
         let query = {};
 
+        // 1. Search by facility name using $regex
+        if (search && search.trim()) {
+          query.name = { $regex: search.trim(),$options: "i" };
+        }
+
+        // 2. Filter by sport type using $in
         if (category && category !== "All") {
-          query.category = { $regex: new RegExp(`^${category}$`, "i") };
+          const categoryList = category
+            .split(",")
+            .map((cat) => new RegExp(`^${cat.trim()}$`, "i"));
+
+          query.category = { $in: categoryList };
         }
 
-        if (search) {
-          query.$or = [
-            { name: { $regex: search,$options: "i" } },
-            { location: { $regex: search,$options: "i" } },
-          ];
-        }
+        const facilities = await facilitiesCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
 
-        const facilities = await facilitiesCollection.find(query).sort({ createdAt: -1 }).toArray();
         res.status(200).json(facilities);
       } catch (error) {
         console.error("Error fetching facilities:", error);
         res.status(500).json({ error: "Failed to fetch facilities" });
       }
     });
-
+    
     // GET: Single Facility by ID
     app.get("/api/facilities/:id", async (req, res) => {
       try {
@@ -298,8 +409,8 @@ async function run() {
       }
     });
 
-    // POST: Create New Booking
-    app.post("/api/bookings", async (req, res) => {
+    // POST: Create New Booking (Protected by verifyToken)
+    app.post("/api/bookings", verifyToken, async (req, res) => {
       try {
         const {
           facilityId,
@@ -320,14 +431,14 @@ async function run() {
         const newBooking = {
           facilityId,
           facilityName,
-          userEmail,
+          userEmail: req.user.email || userEmail,
           userName,
           bookingDate,
           timeSlot,
           hours: Number(hours),
           pricePerHour: Number(pricePerHour),
           totalPrice: Number(totalPrice),
-          status: "pending", // Default requirement
+          status: "pending",
           createdAt: new Date(),
         };
 
@@ -339,12 +450,10 @@ async function run() {
       }
     });
 
-
-
-    // GET: Facilities for logged-in owner
-    app.get("/api/my-facilities", async (req, res) => {
+    // GET: Facilities for logged-in owner (Protected by verifyToken)
+    app.get("/api/my-facilities", verifyToken, async (req, res) => {
       try {
-        const { email } = req.query;
+        const email = req.user.email || req.query.email;
         if (!email) {
           return res.status(400).json({ error: "Owner email is required" });
         }
@@ -361,13 +470,14 @@ async function run() {
       }
     });
 
-    // UPDATE: Update facility (Only owner can update)
-    app.patch("/api/facilities/:id", async (req, res) => {
+    // UPDATE: Update facility (Only owner can update - Protected by verifyToken)
+    app.patch("/api/facilities/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const { ownerEmail, ...updateData } = req.body;
+        const requesterEmail = req.user.email || ownerEmail;
 
-        if (!ownerEmail) {
+        if (!requesterEmail) {
           return res.status(401).json({ error: "Unauthorized. Owner email is required." });
         }
 
@@ -376,7 +486,7 @@ async function run() {
           return res.status(404).json({ error: "Facility not found" });
         }
 
-        if (facility.ownerEmail?.toLowerCase() !== ownerEmail.toLowerCase()) {
+        if (facility.ownerEmail?.toLowerCase() !== requesterEmail.toLowerCase()) {
           return res.status(403).json({ error: "Forbidden: You are not the owner of this facility." });
         }
 
@@ -395,13 +505,13 @@ async function run() {
       }
     });
 
-    // DELETE: Delete facility (Only owner can delete)
-    app.delete("/api/facilities/:id", async (req, res) => {
+    // DELETE: Delete facility (Only owner can delete - Protected by verifyToken)
+    app.delete("/api/facilities/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const { email } = req.query;
+        const requesterEmail = req.user.email || req.query.email;
 
-        if (!email) {
+        if (!requesterEmail) {
           return res.status(401).json({ error: "Unauthorized. Owner email is required." });
         }
 
@@ -410,7 +520,7 @@ async function run() {
           return res.status(404).json({ error: "Facility not found" });
         }
 
-        if (facility.ownerEmail?.toLowerCase() !== email.toLowerCase()) {
+        if (facility.ownerEmail?.toLowerCase() !== requesterEmail.toLowerCase()) {
           return res.status(403).json({ error: "Forbidden: You cannot delete another user's facility." });
         }
 
@@ -422,11 +532,10 @@ async function run() {
       }
     });
 
-
-
-    app.get("/api/my-bookings", async (req, res) => {
+    // GET: Logged-in user's bookings (Protected by verifyToken)
+    app.get("/api/my-bookings", verifyToken, async (req, res) => {
       try {
-        const { email } = req.query;
+        const email = req.user.email || req.query.email;
         if (!email) {
           return res.status(400).json({ error: "User email is required" });
         }
@@ -443,18 +552,18 @@ async function run() {
       }
     });
 
-    // DELETE: Cancel Booking
-    app.delete("/api/bookings/:id", async (req, res) => {
+    // DELETE: Cancel Booking (Protected by verifyToken)
+    app.delete("/api/bookings/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const { email } = req.query;
+        const requesterEmail = req.user.email || req.query.email;
 
         const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
         if (!booking) {
           return res.status(404).json({ error: "Booking not found" });
         }
 
-        if (booking.userEmail?.toLowerCase() !== email?.toLowerCase()) {
+        if (booking.userEmail?.toLowerCase() !== requesterEmail?.toLowerCase()) {
           return res.status(403).json({ error: "Unauthorized to cancel this booking." });
         }
 
