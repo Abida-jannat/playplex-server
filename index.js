@@ -14,10 +14,16 @@ const uri = process.env.MONGODB_URI;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middlewares
+// Trust reverse proxy for production deployment (Render/Railway/Vercel)
+app.set("trust proxy", 1);
+
+// Middlewares with dynamic CORS for production
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      process.env.CLIENT_URL,
+    ].filter(Boolean),
     credentials: true,
   })
 );
@@ -107,7 +113,7 @@ async function run() {
 
     // Ping check
     await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    //console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
     // ----------------------------------------------------
     // JWT Verification Middleware
